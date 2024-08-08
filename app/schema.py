@@ -57,3 +57,5 @@ class Card(CardBase):
     class Config:
         from_attributes = True
 
+class CardUpdate(CardBase):
+    id: int
