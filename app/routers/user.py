@@ -11,6 +11,10 @@ router = APIRouter(
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=schema.UserOut)
 def create_user(user: schema.UserCreate, db: Session=Depends(get_db)):
 
+    #hash password
+    hashed_password = utils.hash(user.password)
+    user.password = hashed_password
+
     all_users = [str(x[0]) for x in db.query(models.User.email).all()]
 
     if user.email in all_users:

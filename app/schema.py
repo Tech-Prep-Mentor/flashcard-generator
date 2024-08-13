@@ -59,3 +59,18 @@ class Card(CardBase):
 
 class CardUpdate(CardBase):
     id: int
+
+
+#Login Schema
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    id: Optional[str] = None
+
+
+#Share Schema
+class Share(BaseModel):
+    user_name: str
+    deck_id: int

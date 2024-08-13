@@ -5,7 +5,7 @@ import google.ai.generativelanguage as glm
 import os
 from dotenv import load_dotenv
 from io import BytesIO
-
+from passlib.context import CryptContext
 
 import typing_extensions as typing
 
@@ -56,3 +56,12 @@ pdf_filename = "techari.pdf"
 formatted_flashcards = generate_flashcards_from_pdf(pdf_filename)
 print(formatted_flashcards)
 '''
+
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash(password: str):
+    return pwd_context.hash(password)
+
+def verify(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)

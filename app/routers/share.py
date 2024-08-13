@@ -1,102 +1,55 @@
 from typing import List
-from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, UploadFile, File
-from .. import models, schema, utils, oauth2
+from fastapi import Response, status, HTTPException, Depends, APIRouter, UploadFile, File
+from .. import models, schema, oauth2, utils
 from sqlalchemy.orm import Session
 from ..database import get_db
 from io import BytesIO
 
 router = APIRouter(
-    prefix="/deck",
-    tags=['Deck']
+    prefix="/share",
+    tags=['Share']
 )
-
 '''
-deck.py file is used to perform operations by the owner of the decks
-If a user wants to access shared decks, the code is in share.py
+share.py file is used to perform operations by users who have access to other decks rather than theirs
 '''
 
-#DECK CREATION
-#get all available decks, belong to current user
+#Share access to other users
+@router.post("/{deck_id}")
+def share_request(form: schema.Share, db: Session = Depends(get_db)):
+
+    deck = db.query(models.Deck).filter(models.Deck.id == form.deck_id).first()
+    if deck == None:
+        raise HTTPException(status_code=404, detail="Deck not found")
+
+    user = db.query(models.User).filter(models.User.email == form.user_name).first()
+    if user == None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User with {form.user_name} not found")
+
+    new_share = models.UserDeck(user_id=user.id, deck_id=deck.id)
+    db.add(new_share)
+    db.commit()
+    db.refresh(new_share)
+    
+
+    return "Deck is shared succesfully"
+
+#get all shared decks 
 @router.get("/", response_model=List[schema.Deck])
-def get_decks(db: Session = Depends(get_db), current_user: int = Depends(oauth2.get_current_user)):
+def get_shared_decks(current_user: int = Depends(oauth2.get_current_user), db: Session = Depends(get_db)):
 
-    decks = db.query(models.Deck).filter(models.Deck.owner_id == current_user.id).all()
+    decks = db.query(models.Deck).join(models.UserDeck).filter(models.UserDeck.user_id == current_user.id).all()
+    if decks == None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You don't have any shared decks")
 
     return decks
 
-#create a new deck
-@router.post("/", response_model=schema.Deck, status_code=status.HTTP_201_CREATED)
-def create_deck(deck: schema.DeckCreate, db: Session = Depends(get_db), current_user: int = Depends(oauth2.get_current_user)):
-    
-    new_deck = models.Deck(owner_id = current_user.id, **deck.dict())    
-
-    db.add(new_deck)
-    db.commit()
-    db.refresh(new_deck)
-
-    return new_deck
-
-#get one specific deck by id (NO NEED this endpoint at the moment)
-@router.get("/{id}", response_model=schema.Deck)            #can be used to show detailed descriptions of each deck
-def get_deck(id: int, db: Session = Depends(get_db)):
-    
-    deck = db.query(models.Deck).filter(models.Deck.id == id).first()
-
-    if not deck:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Deck with {id} not found")
-    print(deck)
-    return deck
-
-#edit one specific deck by id
-@router.put("/{deck_id}", response_model=schema.Deck) 
-def update_deck(deck_id: int, updated_deck: schema.DeckCreate, db: Session = Depends(get_db), 
-                current_user: int = Depends(oauth2.get_current_user)):
-    
-    deck_query = db.query(models.Deck).filter(models.Deck.id == deck_id)
-    deck = deck_query.first()
-
-    if deck == None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Deck with {id} not found")
-    
-    if deck.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="Only the owner can edit this")
-    
-    
-    deck_query.update(updated_deck.dict(), synchronize_session=False)
-    db.commit()
-
-    return deck_query.first()
-
-#delete a deck by id
-@router.delete("/{deck_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_deck(deck_id: int, db: Session = Depends(get_db), current_user: int = Depends(oauth2.get_current_user)):
-    deck_query = db.query(models.Deck).filter(models.Deck.id == deck_id)
-    deck = deck_query.first()
-
-    if deck == None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Deck with {id} not found")
-    
-    if deck.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to delete this deck")
-    
-    deck_query.delete(synchronize_session=False)
-    db.commit()
-
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-
-#CARD CREATION (BASED ON DECK_ID)
 #get all cards in one deck with id
 @router.get("/{deck_id}/cards", response_model=List[schema.CardBase])
 def get_cards_by_deck(deck_id: int, db: Session = Depends(get_db), current_user: int = Depends(oauth2.get_current_user)):
 
-    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).first()
-    if deck.owner_id != current_user.id:
+    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).join(models.UserDeck).filter(models.UserDeck.user_id == current_user.id).first()
+    if deck == None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Not allow to view this deck")
     
@@ -107,13 +60,14 @@ def get_cards_by_deck(deck_id: int, db: Session = Depends(get_db), current_user:
 
     return cards
 
-#create cards from input pdf
+
+#create cards from input flashcards
 @router.post("/{deck_id}/cards", response_model=List[schema.Card], status_code=status.HTTP_201_CREATED) 
 def create_cards_by_deck(deck_id: int, db: Session = Depends(get_db), file: UploadFile = File(...), 
                          current_user: int = Depends(oauth2.get_current_user)):
     
-    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).first()
-    if deck.owner_id != current_user.id:
+    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).join(models.UserDeck).filter(models.UserDeck.user_id == current_user.id).first()
+    if deck == None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Not allow to create flashcards in this deck")
 
@@ -132,12 +86,12 @@ def create_cards_by_deck(deck_id: int, db: Session = Depends(get_db), file: Uplo
     return output
 
 #create card manually
-@router.post("/{id}/card", response_model=schema.Card, status_code=status.HTTP_201_CREATED)
+@router.post("/{deck_id}/card", response_model=schema.Card, status_code=status.HTTP_201_CREATED)
 def create_card_manually(deck_id: int, card: schema.CardBase, db: Session = Depends(get_db), 
                          current_user: int = Depends(oauth2.get_current_user)):
 
-    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).first()
-    if deck.owner_id != current_user.id:
+    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).join(models.UserDeck).filter(models.UserDeck.user_id == current_user.id).first()
+    if deck == None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Not allow to create flashcards in this deck")
     
@@ -150,12 +104,12 @@ def create_card_manually(deck_id: int, card: schema.CardBase, db: Session = Depe
     return new_card
 
 #edit mode for all cards in a deck
-@router.put("/{id}/cards", response_model=List[schema.Card])
+@router.put("/{deck_id}/cards", response_model=List[schema.Card])
 def update_cards(deck_id: int, updated_cards: List[schema.CardUpdate], db: Session = Depends(get_db),
                  current_user: int = Depends(oauth2.get_current_user)):
     
-    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).first()
-    if deck.owner_id != current_user.id:
+    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).join(models.UserDeck).filter(models.UserDeck.user_id == current_user.id).first()
+    if deck == None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Not allow to change flashcards in this deck")
     
@@ -182,12 +136,12 @@ def update_cards(deck_id: int, updated_cards: List[schema.CardUpdate], db: Sessi
 
 
 #delete card in a deck
-@router.delete("/{id}/cards/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{deck_id}/cards/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_card(deck_id: int, card_id: int, db: Session = Depends(get_db),
                 current_user: int = Depends(oauth2.get_current_user)):
     
-    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).first()
-    if deck.owner_id != current_user.id:
+    deck = db.query(models.Deck).filter(models.Deck.id == deck_id).join(models.UserDeck).filter(models.UserDeck.user_id == current_user.id).first()
+    if deck == None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Not allow to delete flashcards in this deck")
     
@@ -205,6 +159,6 @@ def delete_card(deck_id: int, card_id: int, db: Session = Depends(get_db),
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-    
-#User authentication: done
-#Card creation done
+
+
+
