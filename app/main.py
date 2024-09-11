@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile
 from app.database import engine, Base
 
-from .routers import user, deck, card, login, share
+from .routers import user, deck, card, login, share, socket
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -32,7 +32,7 @@ app.include_router(deck.router)
 app.include_router(card.router)
 app.include_router(login.router)
 app.include_router(share.router)
-
+app.include_router(socket.router)
 
 
 
