@@ -1,33 +1,118 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Chat</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Flashcard Editor</title>
+    <style>
+        .flashcard {
+            margin-bottom: 20px;
+        }
+        .question, .answer {
+            display: block;
+            margin-top: 5px;
+            margin-bottom: 10px;
+        }
+    </style>
 </head>
 <body>
-    <h1>WebSocket with FastAPI</h1>
-    <form action="" onsubmit="sendMessage(event)">
-        <input type="text" id="messageText" autocomplete="off" />
-        <button>Send</button>
-    </form>
-    <ul id='messages'>
-    </ul>
+    <div id="flashcards"></div>
+
     <script>
-        var ws = new WebSocket(`ws://127.0.0.1:8000/communicate`);
-        console.log("Connected")
-        ws.onmessage = function (event) {
-            var messages = document.getElementById('messages')
-            var message = document.createElement('li')
-            var content = document.createTextNode(event.data)
-            message.appendChild(content)
-            messages.appendChild(message)
-        };
-        console.log("Send Mesage")
-        function sendMessage(event) {
-            var input = document.getElementById("messageText")
-            ws.send(input.value)
-            input.value = ''
-            event.preventDefault()
+        const flashcardsContainer = document.getElementById('flashcards');
+        const socket = new WebSocket("ws://localhost:8000/socket/ws/1"); // Deck ID 1 for example
+        let updatedFlashcards = {};  // Store updated flashcards for saving
+        let saveTimeout;  // To hold the setTimeout ID for saving flashcards
+
+        // Function to create textareas for question and answer
+        function createFlashcardElements(flashcard) {
+            const flashcardDiv = document.createElement('div');
+            flashcardDiv.className = 'flashcard';
+
+            const questionTextarea = document.createElement('textarea');
+            questionTextarea.className = 'question';
+            questionTextarea.rows = 2;
+            questionTextarea.cols = 50;
+            questionTextarea.value = flashcard.question;
+            questionTextarea.placeholder = 'Question';
+            flashcardDiv.appendChild(questionTextarea);
+
+            const answerTextarea = document.createElement('textarea');
+            answerTextarea.className = 'answer';
+            answerTextarea.rows = 2;
+            answerTextarea.cols = 50;
+            answerTextarea.value = flashcard.answer;
+            answerTextarea.placeholder = 'Answer';
+            flashcardDiv.appendChild(answerTextarea);
+
+            // Debounce function to delay the WebSocket send and save call
+            const debounce = (func, delay) => {
+                let timer;
+                return function(...args) {
+                    clearTimeout(timer);
+                    timer = setTimeout(() => func.apply(this, args), delay);
+                };
+            };
+
+            // Event listeners to send updates via WebSocket and track changes for saving
+            const debouncedUpdate = debounce(() => {
+                updateFlashcard(flashcard.id, questionTextarea.value, answerTextarea.value);
+                trackChanges(flashcard.id, questionTextarea.value, answerTextarea.value);
+            }, 500);
+
+            questionTextarea.addEventListener('input', debouncedUpdate);
+            answerTextarea.addEventListener('input', debouncedUpdate);
+
+            flashcardsContainer.appendChild(flashcardDiv);
         }
+
+        // WebSocket event handler for receiving flashcards
+        socket.onmessage = function(event) {
+            const flashcards = JSON.parse(event.data); // Expecting JSON array of flashcards
+            flashcardsContainer.innerHTML = ''; // Clear previous flashcards
+            flashcards.forEach(createFlashcardElements); // Re-render the flashcards
+        };
+
+        // Function to send updated flashcard data via WebSocket
+        function updateFlashcard(id, question, answer) {
+            const updatedFlashcard = { id, question, answer };
+            socket.send(JSON.stringify([updatedFlashcard])); // Sending updated flashcard as JSON
+        }
+
+        // Function to track changes for API saving
+        function trackChanges(id, question, answer) {
+            // Store updated flashcards in a temporary object
+            updatedFlashcards[id] = { id, question, answer };
+
+            // Reset the save timer
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(saveFlashcards, 10000);  // Save after 10 seconds of inactivity
+        }
+
+        // Function to save flashcards to the backend
+        function saveFlashcards() {
+            // Create an array from the updated flashcards
+            const flashcardsArray = Object.values(updatedFlashcards);
+
+            fetch('http://127.0.0.1:8000/socket/save/1', {
+                method: 'PUT',  // Ensure method matches backend
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(flashcardsArray),  // Send array of flashcards directly
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Flashcards saved:', data);
+                updatedFlashcards = {};  // Clear the updated flashcards after saving
+            })
+            .catch(error => console.error('Error saving flashcards:', error));
+        }
+
+        // WebSocket error handler
+        socket.onerror = function(event) {
+            console.error("WebSocket error observed:", event);
+        };
     </script>
 </body>
 </html>
