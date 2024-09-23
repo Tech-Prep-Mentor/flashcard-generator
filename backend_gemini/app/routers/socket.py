@@ -1,9 +1,10 @@
 from typing import List
-from fastapi import FastAPI, Response, status, HTTPException, Depends, APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import Depends, APIRouter, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException
 from .. import models, schema, utils, oauth2
 from sqlalchemy.orm import Session
 from ..database import get_db
 from pydantic import BaseModel
+import asyncio
 
 router = APIRouter(
     prefix="/socket",
@@ -41,32 +42,52 @@ class ConnectionManager:
         # Send the updated flashcards to all connected clients
         for connection in self.active_connections:
             await connection.send_json([f.dict() for f in message])
+    '''
+    async def save_to_database(self, deck_id: int, db: Session):
+        # Save the in-memory flashcard content back into the database
+        flashcards = self.flashcards.get(deck_id, [])
+        for flashcard_data in flashcards:
+            flashcard = db.query(models.Card).filter(models.Card.id == flashcard_data["id"]).first()
+            if flashcard:
+                flashcard.question = flashcard_data["question"]
+                flashcard.answer = flashcard_data["answer"]
+
+        db.commit()
+    '''
 
 manager = ConnectionManager()
 
 @router.websocket("/ws/{deck_id}")
-async def websocket_endpoint(websocket: WebSocket, deck_id: int, db: Session = Depends(get_db)):
+async def websocket_endpoint(websocket: WebSocket, deck_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     await manager.connect(websocket, deck_id, db)
+
     try:
         while True:
-            # Receive updated flashcard data
+            # Receive updated flashcard data in real-time
             data = await websocket.receive_json()
 
             # Convert the incoming data to FlashcardUpdate objects
             updated_flashcards = [FlashcardUpdate(**flashcard) for flashcard in data]
             await manager.broadcast(deck_id, updated_flashcards)
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-
-@router.post("/save/{deck_id}")
-async def save_flashcards(deck_id: int, db: Session = Depends(get_db)):
-    # Save the in-memory flashcard content back into the database
-    flashcards = manager.flashcards.get(deck_id, [])
-    for flashcard_data in flashcards:
-        flashcard = db.query(models.Card).filter(models.Card.id == flashcard_data["id"]).first()
-        if flashcard:
-            flashcard.question = flashcard_data["question"]
-            flashcard.answer = flashcard_data["answer"]
-
-    db.commit()
-    return {"status": "Flashcards saved successfully"}
+    
+@router.put("/save/{deck_id}")
+async def save_flashcards(deck_id: int, flashcards: List[FlashcardUpdate], db: Session = Depends(get_db)):
+    # Save the flashcard content to the database
+    cards = db.query(models.Card).filter(models.Card.owner_id==deck_id).all()
+    card_lookup = {card.id: card for card in cards}
+    try:
+        for flashcard_data in flashcards:
+            if flashcard_data.id in card_lookup:
+                card = card_lookup[flashcard_data.id]
+                if flashcard_data.question is not None:
+                    card.question = flashcard_data.question
+                if flashcard_data.answer is not None:
+                    card.answer = flashcard_data.answer
+        db.commit()
+        return {"message": "Flashcards updated successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Error saving flashcards")
